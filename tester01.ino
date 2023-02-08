@@ -3,6 +3,8 @@
  * Feb-2023
  *********************************************/
 
+#include <TimerOne.h>
+
 //const int A[] = {37,36,35,34,33,32,31,30,22,23,24,25,26,27,28,29};
 //const int D[] = {49,48,47,46,45,44,43,42};
 #define WR 41
@@ -10,6 +12,10 @@
 #define M1 38
 #define IORQ 40
 #define MREQ 51
+#define RFSH 50
+
+volatile uint32_t rf=0;
+volatile byte R=0;
 
 const String colorName[] = {
   "TRANSPARENT", 
@@ -38,87 +44,198 @@ void setup() {
   pinMode(RD, OUTPUT);
   pinMode(WR, OUTPUT);
   pinMode(MREQ, OUTPUT);
+  pinMode(RFSH, OUTPUT);
 
   digitalWrite(M1, HIGH); //importante para I/O
   digitalWrite(IORQ, HIGH);
   digitalWrite(RD, HIGH);
   digitalWrite(WR, HIGH);
   digitalWrite(MREQ, HIGH);
+  digitalWrite(RFSH, HIGH);
   
   DDRC = 0xff; //A0~A7 output
   DDRA = 0xff; //A8~A15 output
 
   PPI_init();
+
+  Timer1.initialize(25); //Initialize timer 30 us
+  Timer1.attachInterrupt(refreshFunc);
+}
+
+inline void M1_low()
+{
+  PORTD &= B01111111; //38 = PD7
+}
+
+inline void M1_high()
+{
+  PORTD |= B10000000; //38 = PD7
+}
+
+inline void RFSH_low()
+{
+  PORTB &= B11110111; //50 = PB3
+}
+
+inline void RFSH_high()
+{
+  PORTB |= B00001000; //50 = PB3
+}
+
+inline void MREQ_low()
+{
+  PORTB &= B11111011; //51 = PB2
+}
+
+inline void MREQ_high()
+{
+  PORTB |= B00000100; //51 = PB2
+}
+
+inline void RD_low()
+{
+  PORTG &= B11111011; //39 = PG2
+}
+
+inline void RD_high()
+{
+  PORTG |= B00000100; //39 = PG2
+}
+
+inline void WR_low()
+{
+  //PORTG &= B11111110; //41 = PG0
+  PORTG &= ~(1<<PG0); //41 = PG0
+}
+
+inline void WR_high()
+{
+  //PORTG |= B00000001; //41 = PG0
+  PORTG |= (1<<PG0); //41 = PG0
+}
+
+inline void IORQ_low()
+{
+  //PORTG &= B11111101; //40 = PG1
+  PORTG &= ~(1<<PG1); //40 = PG1
+}
+
+inline void IORQ_high()
+{
+  //PORTG |= B00000010; //40 = PG1
+  PORTG |= (1<<PG1); //40 = PG1
+}
+
+void refreshFunc(void)
+{
+  PORTC = R & 0x7f; //A0~A7
+  PORTA = 0; //A8~A15
+
+  RFSH_low(); //digitalWrite(RFSH, LOW);
+  MREQ_low(); //digitalWrite(MREQ, LOW);
+  R++;
+  rf++;
+  asm("nop \n");
+  MREQ_high(); //digitalWrite(MREQ, HIGH);
+  RFSH_high(); //digitalWrite(RFSH, HIGH);
+}
+
+void printTest(void)
+{
+  Serial.println("pasa");
 }
 
 void PPI_init()
 {
   out(0xAB, 0x82); // Bit 7=1, modo por default, puerto A output, puerto B input y puerto C output.
-  //out(0xA8, 0x00); //
+  out(0xA8, 0x50); // ROM en slot 0 pag 1 y 2, RAM en slot 1 pag 3 y 4.
 }
 
-const char nibble[]={'0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F'};
 String hex(byte x)
 {
+  const char nibble[]={'0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F'};
   return String(nibble[x>>4]) + String(nibble[ x & 0xf]);
 }
 
-byte memRead(uint16_t address)
+inline byte memRead(uint16_t address)
 {
+  cli(); //Timer1.stop();
   PORTC = address & 0xff; //A0~A7
   PORTA = address >> 8; //A8~A15
 
   DDRL = 0x00; //D0~D7 input
 
-  digitalWrite(MREQ, LOW);
-  digitalWrite(RD, LOW);
-  //delayMicroseconds(50);
+  //M1_low();
+  MREQ_low(); //digitalWrite(MREQ, LOW);
+  RD_low(); //digitalWrite(RD, LOW);
+  delayMicroseconds(10); //anda con 2, pero pongo mas para mayor seguridad
 
   byte data = PINL;
   
-  digitalWrite(RD, HIGH);
-  //delayMicroseconds(10);
-  digitalWrite(MREQ, HIGH);
+  RD_high(); //digitalWrite(RD, HIGH);
+  MREQ_high(); //digitalWrite(MREQ, HIGH);
+  //M1_high();
+  sei(); //Timer1.resume();
   return data;
 }
 
-byte inp(byte port)
+inline byte memWrite(uint16_t address, byte data)
 {
+  cli(); //Timer1.stop();
+  PORTC = address & 0xff; //A0~A7
+  PORTA = address >> 8; //A8~A15
+
+  DDRL = 0xff; //D0~D7 output
+  PORTL = data;
+
+  MREQ_low(); //digitalWrite(MREQ, LOW);
+  delayMicroseconds(5);
+  WR_low(); //digitalWrite(WR, LOW);
+  delayMicroseconds(5);
+  WR_high(); //digitalWrite(WR, HIGH);
+  delayMicroseconds(5);
+  MREQ_high(); //digitalWrite(MREQ, HIGH);
+  
+  DDRL = 0x00;
+  sei(); //Timer1.resume();
+  return data;
+}
+
+inline byte inp(byte port)
+{
+  cli(); //Timer1.stop();
   DDRL = 0x00; //D0~D7 input
   PORTC = port; //A0~A7
   PORTA = 0; //A8~A15
 
-  digitalWrite(WR, HIGH); //por las dudas
-  digitalWrite(IORQ, LOW);
-  //delayMicroseconds(1);
-  digitalWrite(RD, LOW);
-  //delayMicroseconds(1);
+  IORQ_low(); //digitalWrite(IORQ, LOW);
+  RD_low(); //digitalWrite(RD, LOW);
 
   byte data = PINL;
-  
-  digitalWrite(RD, HIGH);
-  //delayMicroseconds(10);
-  digitalWrite(IORQ, HIGH);
 
+  RD_high(); //digitalWrite(RD, HIGH);
+  IORQ_high(); //digitalWrite(IORQ, HIGH);
+
+  sei(); //Timer1.resume();
   return data;
 }
 
-void out(byte port, byte data)
+inline void out(byte port, byte data)
 {
+  cli(); //Timer1.stop();
   PORTC = port; //A0~A7
   PORTA = 0; //A8~A15
   DDRL = 0xff; //D0~D7 output
   PORTL = data; //
 
-  digitalWrite(RD, HIGH); //por las dudas
-  digitalWrite(IORQ, LOW);
-  digitalWrite(WR, LOW);
+  IORQ_low(); //digitalWrite(IORQ, LOW);
+  WR_low(); //digitalWrite(WR, LOW);
   //delayMicroseconds(1);
-  digitalWrite(WR, HIGH);
-  //delayMicroseconds(1);
-  digitalWrite(IORQ, HIGH);
+  WR_high(); //digitalWrite(WR, HIGH);
+  IORQ_high(); //digitalWrite(IORQ, HIGH);
 
   DDRL = 0x00; //D0~D7 input
+  sei(); //Timer1.resume();
 }
 
 void Test_PSG_1()
@@ -133,7 +250,7 @@ void Test_PSG_1()
     out(0xa1, xx >> 8);
     out(0xa0, 8);
     out(0xa1, 8);
-    //delay(1);
+    delay(1);
   }
   out(0xa0, 8);
   out(0xa1, 0);
@@ -256,18 +373,47 @@ void CharSet()
   }
 }
 
-void loop() {
+void loop() 
+{
+  static bool flag=true;
+  uint32_t ini=millis();
+  if (flag)
+  {  
+    Serial.println("copiando ROM a RAM");
+    for (uint16_t x=0; x<16384; x++)
+    {
+      byte c = memRead(x);
+      memWrite(x+32768, 0x55);
+      //delay(1);
+    }
+    flag=false;
+  }
+  Serial.println("comprobar...");
+  uint16_t err=0;
+  for (uint16_t x=0; x<16384; x++)
+  {
+    byte c = memRead(x);
+    byte d = memRead(x+32768);
+    if (d!=0x55) err++;
+    //delay(1);
+  }  
+  Serial.println(err);
+  
+  
   //static byte C = 0x80;
   Test_PSG_1();
   Test_VDP_4();
   CharSet();
   delay(1000);
-  Test_VDP_3();
-  delay(1000);
+  //Test_VDP_3();
+  //delay(1000);
   //Test_ROM();
   //out(0xAA, C&0x7f);
   //delay(1000);
   //out(0xAA, C|0x80);
   //delay(1000);
   //Test_VDP_1();
+  //Serial.println("RF="+String(rf));
+  Serial.println("us="+String((millis()-ini)*1000/rf)+" R="+String(R));
+  rf=0;
 }
