@@ -1,5 +1,6 @@
 /*********************************************
  * Autor: Carlos Escobar
+ * Asistencia técnica: Carlos Maidana
  * Feb-2023
  *********************************************/
 
@@ -12,10 +13,11 @@
 #define M1 38
 #define IORQ 40
 #define MREQ 51
-#define RFSH 50
+//#define RFSH 50
+#define RFSH 8
+#define CLOCK 52
 
-volatile uint32_t rf=0;
-volatile byte R=0;
+#define CHARSET_BASE 7103
 
 const String colorName[] = {
   "TRANSPARENT", 
@@ -45,6 +47,7 @@ void setup() {
   pinMode(WR, OUTPUT);
   pinMode(MREQ, OUTPUT);
   pinMode(RFSH, OUTPUT);
+  pinMode(CLOCK, INPUT);
 
   digitalWrite(M1, HIGH); //importante para I/O
   digitalWrite(IORQ, HIGH);
@@ -59,7 +62,15 @@ void setup() {
   PPI_init();
 
   Timer1.initialize(25); //Initialize timer 30 us
-  Timer1.attachInterrupt(refreshFunc);
+  Timer1.attachInterrupt(refreshFunc,25);
+
+}
+
+inline void PPI_init()
+{
+  out(0xAB, 0x82); // Bit 7=1, modo por default, puerto A output, puerto B input y puerto C output.
+  out(0xAA, 0x50); // RELE OFF, CAPS LED OFF
+  out(0xA8, 0x50); // ROM en slot 0 pag 1 y 2, RAM en slot 1 pag 3 y 4.
 }
 
 inline void M1_low()
@@ -74,12 +85,14 @@ inline void M1_high()
 
 inline void RFSH_low()
 {
-  PORTB &= B11110111; //50 = PB3
+  //PORTB &= B11110111; //50 = PB3
+  PORTH &= ~(1<<PH5); //8 = PH5
 }
 
 inline void RFSH_high()
 {
-  PORTB |= B00001000; //50 = PB3
+  //PORTB |= B00001000; //50 = PB3
+  PORTH |= (1<<PH5); //8 = PH5
 }
 
 inline void MREQ_low()
@@ -128,27 +141,27 @@ inline void IORQ_high()
 
 void refreshFunc(void)
 {
-  PORTC = R & 0x7f; //A0~A7
+  static byte R=0;
+  PORTC = (byte)(R & 0x7f); //A0~A7
   PORTA = 0; //A8~A15
 
-  RFSH_low(); //digitalWrite(RFSH, LOW);
-  MREQ_low(); //digitalWrite(MREQ, LOW);
+  //M1_high();
+  //WR_high();
+  //RD_high();
+  //IORQ_high();
+
+  //while ((PINB & (1<<PB1)));
+  
+  RFSH_low();
+  MREQ_low();
   R++;
-  rf++;
-  asm("nop \n");
-  MREQ_high(); //digitalWrite(MREQ, HIGH);
-  RFSH_high(); //digitalWrite(RFSH, HIGH);
+  MREQ_high();
+  RFSH_high();
 }
 
 void printTest(void)
 {
   Serial.println("pasa");
-}
-
-void PPI_init()
-{
-  out(0xAB, 0x82); // Bit 7=1, modo por default, puerto A output, puerto B input y puerto C output.
-  out(0xA8, 0x50); // ROM en slot 0 pag 1 y 2, RAM en slot 1 pag 3 y 4.
 }
 
 String hex(byte x)
@@ -159,51 +172,61 @@ String hex(byte x)
 
 inline byte memRead(uint16_t address)
 {
-  cli(); //Timer1.stop();
-  PORTC = address & 0xff; //A0~A7
-  PORTA = address >> 8; //A8~A15
-
+  cli(); 
+  //Timer1.stop();
   DDRL = 0x00; //D0~D7 input
+  PORTC = (byte)(address & 0xff); //A0~A7
+  PORTA = (byte)(address >> 8); //A8~A15
 
-  //M1_low();
-  MREQ_low(); //digitalWrite(MREQ, LOW);
-  RD_low(); //digitalWrite(RD, LOW);
-  delayMicroseconds(10); //anda con 2, pero pongo mas para mayor seguridad
-
+  M1_low();
+  asm("nop \n nop \n");
+  MREQ_low();
+  RD_low();
+  //delayMicroseconds(10); //anda con 2, pero pongo mas para mayor seguridad
+  asm("nop \n nop \n nop \n nop \n nop"); //5 nops = 300ns aprox
   byte data = PINL;
   
   RD_high(); //digitalWrite(RD, HIGH);
   MREQ_high(); //digitalWrite(MREQ, HIGH);
-  //M1_high();
-  sei(); //Timer1.resume();
+  M1_high();
+  sei(); 
+  //Timer1.resume();
   return data;
 }
 
-inline byte memWrite(uint16_t address, byte data)
+inline void memWrite(uint16_t address, byte data)
 {
-  cli(); //Timer1.stop();
-  PORTC = address & 0xff; //A0~A7
-  PORTA = address >> 8; //A8~A15
+  cli(); 
+  //Timer1.stop();
+  PORTC = (byte)(address & 0xff); //A0~A7
+  PORTA = (byte)(address >> 8); //A8~A15
 
   DDRL = 0xff; //D0~D7 output
   PORTL = data;
 
-  MREQ_low(); //digitalWrite(MREQ, LOW);
-  delayMicroseconds(5);
-  WR_low(); //digitalWrite(WR, LOW);
-  delayMicroseconds(5);
-  WR_high(); //digitalWrite(WR, HIGH);
-  delayMicroseconds(5);
-  MREQ_high(); //digitalWrite(MREQ, HIGH);
+  RFSH_high();
+  M1_low();
+  asm("nop\n nop\n nop\n nop\n nop\n");
+  MREQ_low(); 
+  asm("nop\n nop\n nop\n nop\n nop\n");
+  WR_low();
+  
+  //asm("nop \n");
+  asm("nop\n nop\n nop\n nop\n nop\n");
+  
+  WR_high();
+  MREQ_high();
+  M1_high();
   
   DDRL = 0x00;
-  sei(); //Timer1.resume();
-  return data;
+  sei();
+  //Timer1.resume();
 }
 
 inline byte inp(byte port)
 {
-  cli(); //Timer1.stop();
+  cli(); 
+  //Timer1.stop();
   DDRL = 0x00; //D0~D7 input
   PORTC = port; //A0~A7
   PORTA = 0; //A8~A15
@@ -216,13 +239,15 @@ inline byte inp(byte port)
   RD_high(); //digitalWrite(RD, HIGH);
   IORQ_high(); //digitalWrite(IORQ, HIGH);
 
-  sei(); //Timer1.resume();
+  sei(); 
+  //Timer1.resume();
   return data;
 }
 
 inline void out(byte port, byte data)
 {
-  cli(); //Timer1.stop();
+  cli(); 
+  //Timer1.stop();
   PORTC = port; //A0~A7
   PORTA = 0; //A8~A15
   DDRL = 0xff; //D0~D7 output
@@ -235,7 +260,8 @@ inline void out(byte port, byte data)
   IORQ_high(); //digitalWrite(IORQ, HIGH);
 
   DDRL = 0x00; //D0~D7 input
-  sei(); //Timer1.resume();
+  sei(); 
+  //Timer1.resume();
 }
 
 void Test_PSG_1()
@@ -335,7 +361,7 @@ void Test_VDP_3()
   Serial.println(VRAM_read(0));
 }
 
-void Test_VDP_4() //SCREEN 0
+void screen0() //SCREEN 0
 {
   inp(0x99);
   VDP_set(0, 0); //
@@ -364,56 +390,103 @@ void Test_ROM()
   }
 }
 
-void CharSet()
+void CharSet(uint16_t base)
 {
   for (uint16_t i=0; i<2048; i++)
   {
-    byte c = memRead(7103 + i);
+    byte c = memRead(i+base);
     VRAM_write(0x800 + i, c);
   }
 }
 
+void Test_VDP_6()
+{
+  screen0();
+  for (uint16_t x=0; x<40*24; x++)
+    VRAM_write(x,0);
+  CharSet(CHARSET_BASE);
+
+  for (byte color=0; color<16; color++)
+  {
+    Serial.println(colorName[color&0xf]); 
+    VDP_set(7, ((color & 0xf)==0xf ? 0x10 :0xf0) | color & 0xf);
+    for (uint16_t xy = 0; xy<20; xy++)
+    {
+      VRAM_write(xy, colorName[color&0xf][xy]); 
+    }
+    Test_PSG_1();
+    delay(1000);
+  }
+}
+
+void loop0()
+{
+  /*
+  static byte slot=0;
+  out(0xa8, slot);
+  if (slot == 0) slot=0x55;
+  else if (slot == 0x55) slot = 0xaa;
+  else if (slot == 0xaa) slot = 0xff;
+  else if (slot == 0xff) slot = 0x00;
+  Serial.println("slot "+hex(slot));
+  */
+
+  uint16_t address = random(32)+0x7ff0;
+  byte xx=memRead(address);
+  xx++;
+  memWrite(address, xx);
+  byte c = memRead(address);
+  if (c!=xx) 
+  {
+    Serial.println(hex(address>>8)+hex(address&0xff)+":"+hex(c)); 
+  }
+  else
+  {
+    Serial.println(hex(address>>8)+hex(address&0xff)+": ok"); 
+  }
+  delay(1000);
+}
+
+static bool flag=true;
+void loop01() 
+{
+  if (flag)
+  {
+    screen0();
+    out(0xa8, B01010000);
+    for (uint16_t x=0; x<2048; x++)
+    {
+      byte b = memRead(CHARSET_BASE+x);
+      memWrite(0x8000+x, b);
+      memWrite(0xC000+x, b);
+    }
+    flag = false;
+  }
+  //CharSet(CHARSET_BASE);
+  //static uint16_t aaa=0x8000; aaa+=8;
+  memWrite(0x8000, 0x55); 
+  memWrite(0x8001, 0xaa); 
+  memWrite(0x8002, 0x55); 
+  memWrite(0x8003, 0xaa); 
+  memWrite(0x8004, 0x55); 
+  memWrite(0x8005, 0xaa); 
+  memWrite(0x8006, 0x55); 
+  memWrite(0x8007, 0xaa); 
+  memWrite(0x8000, 0xaa); 
+  memWrite(0xc001, 0x55); 
+  memWrite(0xc002, 0xaa); 
+  memWrite(0xc003, 0x55); 
+  memWrite(0xc004, 0xaa); 
+  memWrite(0xc005, 0x55); 
+  memWrite(0xc006, 0xaa); 
+  memWrite(0xc007, 0x55); 
+  CharSet(0x8000);
+ // delay(1000);
+  CharSet(0xc000);
+  //delay(1000);
+}
+
 void loop() 
 {
-  static bool flag=true;
-  uint32_t ini=millis();
-  if (flag)
-  {  
-    Serial.println("copiando ROM a RAM");
-    for (uint16_t x=0; x<16384; x++)
-    {
-      byte c = memRead(x);
-      memWrite(x+32768, 0x55);
-      //delay(1);
-    }
-    flag=false;
-  }
-  Serial.println("comprobar...");
-  uint16_t err=0;
-  for (uint16_t x=0; x<16384; x++)
-  {
-    byte c = memRead(x);
-    byte d = memRead(x+32768);
-    if (d!=0x55) err++;
-    //delay(1);
-  }  
-  Serial.println(err);
-  
-  
-  //static byte C = 0x80;
-  Test_PSG_1();
-  Test_VDP_4();
-  CharSet();
-  delay(1000);
-  //Test_VDP_3();
-  //delay(1000);
-  //Test_ROM();
-  //out(0xAA, C&0x7f);
-  //delay(1000);
-  //out(0xAA, C|0x80);
-  //delay(1000);
-  //Test_VDP_1();
-  //Serial.println("RF="+String(rf));
-  Serial.println("us="+String((millis()-ini)*1000/rf)+" R="+String(R));
-  rf=0;
+  Test_VDP_6();
 }
